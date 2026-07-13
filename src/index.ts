@@ -1,8 +1,15 @@
 #!/usr/bin/env node
 
-import { runServer } from './server.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { buildServer } from './server.js';
 
-runServer().catch((error) => {
-  console.error('Fatal error:', error);
+async function main(): Promise<void> {
+  const transport = new StdioServerTransport();
+  await buildServer().connect(transport);
+  console.error('[br-docs-mcp] MCP server running on stdio');
+}
+
+main().catch((error) => {
+  console.error('[br-docs-mcp] Fatal error:', error);
   process.exit(1);
 });
