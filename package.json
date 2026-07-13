@@ -1,0 +1,44 @@
+{
+  "name": "br-docs-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for Brazilian document validation and generation (CPF, CNPJ, boleto)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "dist/index.js",
+  "bin": {
+    "br-docs-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/server.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "type-check": "tsc --noEmit",
+    "prepublishOnly": "npm run type-check && npm test && npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "cpf",
+    "cnpj",
+    "boleto",
+    "brazilian-documents"
+  ],
+  "author": "Vicente Moura <mouraovicente1@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.3",
+    "vitest": "^1.0.4",
+    "tsx": "^4.7.0"
+  }
+}
