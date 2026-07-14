@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { validateCpf, generateCpf } from './domain/cpf.js';
 import { validateCnpj, generateCnpj } from './domain/cnpj.js';
 import { validateBoleto, parseBoleto } from './domain/boleto.js';
+import { VALIDATION_RULES_MD } from './validation-rules.js';
 
 const SERVER_INFO = { name: 'br-docs-mcp', version: '0.1.0' } as const;
 
@@ -106,6 +107,65 @@ function registerTools(server: McpServer): void {
   );
 }
 
+function registerResources(server: McpServer): void {
+  server.registerResource(
+    'validation-rules',
+    'docs://validation-rules',
+    {
+      description:
+        'Documentação em markdown dos algoritmos de validação: mod 11 do CPF/CNPJ, ' +
+        'mod 10 e mod 11 do boleto e fator de vencimento.',
+      mimeType: 'text/markdown',
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: 'text/markdown',
+          text: VALIDATION_RULES_MD,
+        },
+      ],
+    })
+  );
+}
+
+function registerPrompts(server: McpServer): void {
+  server.registerPrompt(
+    'audit_customer_record',
+    {
+      description:
+        'Gera uma instrução para auditar um cadastro de cliente (JSON), validando ' +
+        'cada documento brasileiro encontrado com as tools deste servidor.',
+      argsSchema: {
+        record: z.string().describe('Cadastro do cliente em JSON, com campos como cpf, cnpj e boleto'),
+      },
+    },
+    ({ record }) => ({
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: [
+              'Audite o cadastro de cliente abaixo usando as tools do servidor br-docs-mcp:',
+              '',
+              '1. Para cada campo de CPF, chame validate_cpf e reporte o resultado.',
+              '2. Para cada campo de CNPJ, chame validate_cnpj e reporte o resultado.',
+              '3. Para cada linha digitável de boleto, chame validate_boleto e, se válida, parse_boleto para conferir banco, valor e vencimento.',
+              '4. Ao final, produza um resumo com cada documento, seu status (válido/inválido) e o motivo de qualquer reprovação.',
+              '',
+              'Cadastro a auditar:',
+              '```json',
+              record,
+              '```',
+            ].join('\n'),
+          },
+        },
+      ],
+    })
+  );
+}
+
 /**
  * Builds the MCP server with every tool, resource and prompt registered.
  * Transport-agnostic: the caller decides how to connect (stdio, in-memory, ...).
@@ -113,5 +173,7 @@ function registerTools(server: McpServer): void {
 export function buildServer(): McpServer {
   const server = new McpServer(SERVER_INFO);
   registerTools(server);
+  registerResources(server);
+  registerPrompts(server);
   return server;
 }
