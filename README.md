@@ -14,12 +14,12 @@ Uma implementação de servidor MCP que expõe 6 ferramentas para validar e gera
 | **Geração de CPF** | Gera CPF válido e aleatório | Pure logic |
 | **Validação de CNPJ** | Valida CNPJ com pesos mod11 específicos | TypeScript |
 | **Geração de CNPJ** | Gera CNPJ válido e aleatório | Pure logic |
-| **Validação de Boleto** | Valida linha digitável (47 dígitos) com mod10 e mod11 | TypeScript |
-| **Parse de Boleto** | Extrai código de banco, valor e vencimento de boleto | Pure logic |
+| **Validação de Boleto** | Valida linha digitável (47 dígitos, layout FEBRABAN): mod10 nos 3 campos + DV geral mod11 na posição 33 | TypeScript |
+| **Parse de Boleto** | Extrai banco, valor e vencimento via fator de vencimento (com rollover de 22/02/2025) | Pure logic |
 | **MCP Tools** | Expõe 6 ferramentas via Model Context Protocol | @modelcontextprotocol/sdk |
-| **MCP Resource** | Documentação dos algoritmos de validação | Markdown |
-| **MCP Prompt** | Prompt para auditar registros de clientes | Template |
-| **Testes** | Cobertura completa com 42 testes | Vitest |
+| **MCP Resource** | `docs://validation-rules` com a documentação dos algoritmos | Markdown |
+| **MCP Prompt** | `audit_customer_record` para auditar cadastros usando as tools | Template |
+| **Testes** | 40 testes, incluindo E2E MCP real (Client ↔ Server via InMemoryTransport) | Vitest |
 | **Clean Architecture** | Lógica pura separada da camada MCP | src/domain |
 
 ## Arquitetura
@@ -95,7 +95,7 @@ npm test
 
 ### Modo watch
 ```bash
-npm test:watch
+npm run test:watch
 ```
 
 ### Type check
@@ -103,13 +103,13 @@ npm test:watch
 npm run type-check
 ```
 
-Todos os 42 testes passam, cobrindo:
+Todos os 40 testes rodam 100% offline e cobrem:
 - Validação de CPF/CNPJ formatado e bruto
-- Rejeição de dígitos incorretos, comprimento inválido, tudo repetido
-- Geração e roundtrip (gerar → validar → verdadeiro)
-- Validação de boleto com checksum correto
-- Parse de boleto extraindo banco, valor e vencimento
-- Integração E2E entre os domínios
+- Rejeição de dígito verificador errado, comprimento inválido, dígitos repetidos
+- Roundtrip gerar → validar (20 iterações para CPF e CNPJ)
+- Boleto: linha válida construída nos testes (com mod10/mod11 independentes), campos corrompidos, DV geral errado
+- Parse de boleto: banco, valor e vencimento — incluindo o rollover do fator (1000 = 22/02/2025) e fator 0000 (sem vencimento)
+- E2E MCP real: `Client` e `McpServer` conectados por `InMemoryTransport.createLinkedPair()`, listando as 6 tools, chamando `validate_cpf`, lendo o resource e obtendo o prompt
 
 ## Uso com clientes MCP
 
@@ -146,12 +146,12 @@ Resposta:
 ```
 
 ### Ferramentas disponíveis
-- `validate_cpf` - Valida CPF
-- `generate_cpf` - Gera CPF válido
+- `validate_cpf` - Valida CPF → `{ "valid": true }` ou `{ "valid": false, "reason": "check digit mismatch" }`
+- `generate_cpf` - Gera CPF válido → `{ "cpf": "..." }`
 - `validate_cnpj` - Valida CNPJ
 - `generate_cnpj` - Gera CNPJ válido
-- `validate_boleto` - Valida boleto
-- `parse_boleto` - Parse de boleto
+- `validate_boleto` - Valida linha digitável de boleto
+- `parse_boleto` - Extrai dados do boleto → `{ "bankCode": "001", "amount": 1500, "dueDate": "2025-02-22" }`
 
 ### Resource disponível
 - `docs://validation-rules` - Documentação dos algoritmos
@@ -167,9 +167,10 @@ Resposta:
 │   ├── domain/
 │   │   ├── cpf.ts          # Lógica pura de CPF
 │   │   ├── cnpj.ts         # Lógica pura de CNPJ
-│   │   └── boleto.ts       # Lógica pura de boleto
-│   ├── server.ts           # Servidor MCP
-│   └── index.ts            # Entrypoint (#!/usr/bin/env node)
+│   │   └── boleto.ts       # Lógica pura de boleto (layout FEBRABAN)
+│   ├── server.ts           # Servidor MCP (tools, resource, prompt)
+│   ├── validation-rules.ts # Markdown servido pelo resource
+│   └── index.ts            # Entrypoint stdio (#!/usr/bin/env node)
 ├── tests/
 │   ├── domain/
 │   │   ├── cpf.test.ts
