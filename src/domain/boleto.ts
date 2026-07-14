@@ -6,118 +6,180 @@ export interface ValidationResult {
 export interface BoletoData {
   bankCode: string;
   amount: number;
-  maturity: Date;
+  /** Null when the due date factor is 0000 (boleto without a due date). */
+  dueDate: Date | null;
 }
 
-const BASE_DATE = new Date(1997, 9, 7); // October 7, 1997
-
-function cleanBoleto(boleto: string): string {
-  return boleto.replace(/[^\d]/g, '');
+export interface ParseBoletoOptions {
+  /**
+   * Reference date used to disambiguate the due date factor after the
+   * FEBRABAN rollover of 2025-02-22. Defaults to "now".
+   */
+  referenceDate?: Date;
 }
 
-function calculateMod10(digits: string): string {
+/** Base date of the due date factor: 1997-10-07 (UTC). */
+const FACTOR_BASE_UTC = Date.UTC(1997, 9, 7);
+const DAY_MS = 86_400_000;
+/** The factor cycles every 9000 days (1000..9999). */
+const CYCLE_MS = 9000 * DAY_MS;
+
+const LINE_LENGTH = 47;
+
+function cleanLine(input: string): string {
+  return input.replace(/[.\s-]/g, '');
+}
+
+/**
+ * FEBRABAN mod 10: right to left, weights alternate 2, 1, 2, 1...
+ * Products above 9 have their digits summed. DV = (10 - sum % 10) % 10.
+ */
+function mod10CheckDigit(digits: string): number {
   let sum = 0;
-  let multiplier = 2;
-
+  let weight = 2;
   for (let i = digits.length - 1; i >= 0; i--) {
-    let result = parseInt(digits[i], 10) * multiplier;
-    if (result > 9) {
-      result = Math.floor(result / 10) + (result % 10);
+    let product = Number(digits[i]) * weight;
+    if (product > 9) {
+      product = Math.floor(product / 10) + (product % 10);
     }
-    sum += result;
-    multiplier = multiplier === 2 ? 1 : 2;
+    sum += product;
+    weight = weight === 2 ? 1 : 2;
   }
-
-  return String((10 - (sum % 10)) % 10);
+  return (10 - (sum % 10)) % 10;
 }
 
-function calculateMod11(digits: string): string {
-  const sequence = '23456789';
+/**
+ * FEBRABAN mod 11 for the barcode general check digit: right to left,
+ * weights cycle 2..9. DV = 11 - (sum % 11); results 0, 10 and 11 become 1.
+ */
+function mod11CheckDigit(digits: string): number {
   let sum = 0;
-
-  for (let i = 0; i < digits.length; i++) {
-    sum += parseInt(digits[i], 10) * parseInt(sequence[i % sequence.length], 10);
+  let weight = 2;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    sum += Number(digits[i]) * weight;
+    weight = weight === 9 ? 2 : weight + 1;
   }
-
-  const remainder = sum % 11;
-  if (remainder === 0 || remainder === 1) {
-    return '0';
-  }
-  return String(11 - remainder);
+  const dv = 11 - (sum % 11);
+  return dv === 0 || dv === 10 || dv === 11 ? 1 : dv;
 }
 
-export function validateBoleto(input: string): ValidationResult {
-  const cleaned = cleanBoleto(input);
+interface LineParts {
+  bank: string;
+  currency: string;
+  field1Content: string;
+  field1Dv: string;
+  field2Content: string;
+  field2Dv: string;
+  field3Content: string;
+  field3Dv: string;
+  generalDv: string;
+  factor: string;
+  amount: string;
+}
 
-  if (cleaned.length !== 47) {
+/**
+ * Splits the 47-digit linha digitável.
+ * Layout (0-based): field 1 = [0..9] (content + DV), field 2 = [10..20],
+ * field 3 = [21..31], general DV = [32] (position 33, 1-based),
+ * field 5 = [33..36] factor + [37..46] amount.
+ */
+function splitLine(line: string): LineParts {
+  return {
+    bank: line.slice(0, 3),
+    currency: line.slice(3, 4),
+    field1Content: line.slice(0, 9),
+    field1Dv: line.slice(9, 10),
+    field2Content: line.slice(10, 20),
+    field2Dv: line.slice(20, 21),
+    field3Content: line.slice(21, 31),
+    field3Dv: line.slice(31, 32),
+    generalDv: line.slice(32, 33),
+    factor: line.slice(33, 37),
+    amount: line.slice(37, 47),
+  };
+}
+
+/** Reassembles the 43 digits of the barcode (without its check digit). */
+function reassembleBarcode43(parts: LineParts): string {
+  const freeField =
+    parts.field1Content.slice(4, 9) + parts.field2Content + parts.field3Content;
+  return parts.bank + parts.currency + parts.factor + parts.amount + freeField;
+}
+
+/**
+ * Validates a linha digitável: 47 numeric digits (punctuation accepted),
+ * mod 10 on each of the 3 fields and the general mod 11 check digit at
+ * position 33, computed over the reassembled barcode.
+ */
+export function validateBoleto(input: string): ValidationResult {
+  const line = cleanLine(input);
+
+  if (!/^\d+$/.test(line)) {
+    return { valid: false, reason: 'line must contain only digits' };
+  }
+
+  if (line.length !== LINE_LENGTH) {
     return { valid: false, reason: 'invalid length' };
   }
 
-  if (!/^\d+$/.test(cleaned)) {
-    return { valid: false, reason: 'invalid characters' };
+  const parts = splitLine(line);
+
+  const fields: Array<{ content: string; dv: string; label: string }> = [
+    { content: parts.field1Content, dv: parts.field1Dv, label: 'field 1' },
+    { content: parts.field2Content, dv: parts.field2Dv, label: 'field 2' },
+    { content: parts.field3Content, dv: parts.field3Dv, label: 'field 3' },
+  ];
+
+  for (const { content, dv, label } of fields) {
+    if (mod10CheckDigit(content) !== Number(dv)) {
+      return { valid: false, reason: `${label} check digit mismatch` };
+    }
   }
 
-  // Linha digitável structure (47 digits):
-  // 0-3:   Banco (4 digits: bank code 3 + DV 1)
-  // 4-10:  Sequência 1 (7 digits: sequence + DV1)
-  // 11-20: Sequência 2 (10 digits)
-  // 21-30: Sequência 3 (10 digits)
-  // 31:    DV geral (1 digit)
-  // 32-36: Vencimento (5 digits)
-  // 37-46: Valor (10 digits)
-
-  const banco = cleaned.substring(0, 4);
-  const seq1 = cleaned.substring(4, 10);
-  const seq1Dv = cleaned.substring(10, 11);
-  const seq2 = cleaned.substring(11, 21);
-  const seq3 = cleaned.substring(21, 31);
-  const dvGeral = cleaned.substring(31, 32);
-  const vencimento = cleaned.substring(32, 37);
-  const valor = cleaned.substring(37, 47);
-
-  // Validate seq1 DV (mod10)
-  const expectedSeq1Dv = calculateMod10(banco + seq1);
-  if (expectedSeq1Dv !== seq1Dv) {
-    return { valid: false, reason: 'sequence 1 check digit mismatch' };
-  }
-
-  // Reconstruct code of barcode for general DV
-  // Barcode: BBB (bank without DV) + VV (vencimento) + VVVVVVVVVV (valor) + CCCCCCCC (company/sequence)
-  const bankWithoutDv = banco.substring(0, 3);
-  const codigoBarras = bankWithoutDv + vencimento + valor + seq1 + seq2 + seq3;
-
-  const expectedDvGeral = calculateMod11(codigoBarras);
-  if (expectedDvGeral !== dvGeral) {
+  if (mod11CheckDigit(reassembleBarcode43(parts)) !== Number(parts.generalDv)) {
     return { valid: false, reason: 'general check digit mismatch' };
   }
 
   return { valid: true };
 }
 
-export function parseBoleto(input: string): BoletoData {
+/**
+ * Converts a due date factor into a date. The factor counts days since
+ * 1997-10-07 and rolled over on 2025-02-22 (when it went back to 1000),
+ * so a factor maps to more than one date; the candidate closest to the
+ * reference date wins. Factor 0 means "no due date".
+ */
+function dueDateFromFactor(factor: number, referenceDate: Date): Date | null {
+  if (factor === 0) {
+    return null;
+  }
+  let candidate = FACTOR_BASE_UTC + factor * DAY_MS;
+  while (
+    Math.abs(candidate + CYCLE_MS - referenceDate.getTime()) <
+    Math.abs(candidate - referenceDate.getTime())
+  ) {
+    candidate += CYCLE_MS;
+  }
+  return new Date(candidate);
+}
+
+/**
+ * Parses a valid linha digitável, extracting the bank code (first 3 digits),
+ * the amount (last 10 digits / 100) and the due date via the due date factor.
+ * Throws if the line does not validate.
+ */
+export function parseBoleto(input: string, options: ParseBoletoOptions = {}): BoletoData {
   const validation = validateBoleto(input);
   if (!validation.valid) {
-    throw new Error(`Invalid boleto: ${validation.reason}`);
+    throw new Error(`invalid boleto: ${validation.reason}`);
   }
 
-  const cleaned = cleanBoleto(input);
-
-  const bankCode = cleaned.substring(0, 3);
-  const vencimento = cleaned.substring(32, 37);
-  const valor = cleaned.substring(37, 47);
-
-  // Decode vencimento (maturity factor)
-  // Factor is days since October 7, 1997
-  const diasAposBase = parseInt(vencimento, 10);
-  const maturity = new Date(BASE_DATE);
-  maturity.setDate(maturity.getDate() + diasAposBase);
-
-  // Decode valor (amount in cents, divide by 100)
-  const amount = parseInt(valor, 10) / 100;
+  const parts = splitLine(cleanLine(input));
+  const referenceDate = options.referenceDate ?? new Date();
 
   return {
-    bankCode,
-    amount,
-    maturity,
+    bankCode: parts.bank,
+    amount: Number(parts.amount) / 100,
+    dueDate: dueDateFromFactor(Number(parts.factor), referenceDate),
   };
 }

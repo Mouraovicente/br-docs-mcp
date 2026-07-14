@@ -97,7 +97,7 @@ function registerTools(server: McpServer): void {
         return jsonResult({
           bankCode: parsed.bankCode,
           amount: parsed.amount,
-          dueDate: parsed.maturity.toISOString().slice(0, 10),
+          dueDate: parsed.dueDate ? parsed.dueDate.toISOString().slice(0, 10) : null,
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
