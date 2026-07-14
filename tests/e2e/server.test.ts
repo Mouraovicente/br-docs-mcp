@@ -1,143 +1,114 @@
-import { describe, it, expect } from 'vitest';
-import { validateCpf, generateCpf } from '../../src/domain/cpf.js';
-import { validateCnpj, generateCnpj } from '../../src/domain/cnpj.js';
-import { validateBoleto, parseBoleto } from '../../src/domain/boleto.js';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { buildServer } from '../../src/server.js';
 
-// Helper to generate a valid boleto for testing
-function generateValidBoleto(
-  bankCode: string,
-  seq1: string,
-  seq2: string,
-  seq3: string,
-  vencimento: string,
-  valor: string
-): string {
-  const calculateMod10 = (digits: string): string => {
-    let sum = 0;
-    let multiplier = 2;
-    for (let i = digits.length - 1; i >= 0; i--) {
-      let result = parseInt(digits[i], 10) * multiplier;
-      if (result > 9) {
-        result = Math.floor(result / 10) + (result % 10);
-      }
-      sum += result;
-      multiplier = multiplier === 2 ? 1 : 2;
-    }
-    return String((10 - (sum % 10)) % 10);
-  };
-
-  const calculateMod11 = (digits: string): string => {
-    const sequence = '23456789';
-    let sum = 0;
-    for (let i = 0; i < digits.length; i++) {
-      sum += parseInt(digits[i], 10) * parseInt(sequence[i % sequence.length], 10);
-    }
-    const remainder = sum % 11;
-    if (remainder === 0 || remainder === 1) {
-      return '0';
-    }
-    return String(11 - remainder);
-  };
-
-  const seq1Dv = calculateMod10(bankCode + seq1);
-  const codigoBarras = bankCode.substring(0, 3) + vencimento + valor + seq1 + seq2 + seq3;
-  const dvGeral = calculateMod11(codigoBarras);
-
-  return bankCode + seq1 + seq1Dv + seq2 + seq3 + dvGeral + vencimento + valor;
+interface TextContent {
+  type: string;
+  text: string;
 }
 
-describe('E2E: Domain Functions Integration', () => {
-  describe('CPF Validation Flow', () => {
-    it('should validate a known valid CPF', () => {
-      const result = validateCpf('529.982.247-25');
-      expect(result.valid).toBe(true);
-    });
+function firstText(result: { content?: unknown }): string {
+  const content = result.content as TextContent[] | undefined;
+  if (!content || content.length === 0 || content[0].type !== 'text') {
+    throw new Error('expected text content in tool result');
+  }
+  return content[0].text;
+}
 
-    it('should reject a known invalid CPF', () => {
-      const result = validateCpf('111.111.111-11');
-      expect(result.valid).toBe(false);
-    });
+describe('E2E: MCP server over InMemoryTransport', () => {
+  let client: Client;
 
-    it('should generate and validate CPF roundtrip', () => {
-      const cpf = generateCpf({ formatted: false });
-      const validation = validateCpf(cpf);
-      expect(validation.valid).toBe(true);
-    });
+  beforeAll(async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await buildServer().connect(serverTransport);
+    client = new Client({ name: 'e2e-test-client', version: '1.0.0' });
+    await client.connect(clientTransport);
   });
 
-  describe('CNPJ Validation Flow', () => {
-    it('should validate a known valid CNPJ', () => {
-      const result = validateCnpj('11.222.333/0001-81');
-      expect(result.valid).toBe(true);
-    });
-
-    it('should reject a known invalid CNPJ', () => {
-      const result = validateCnpj('11.111.111/1111-11');
-      expect(result.valid).toBe(false);
-    });
-
-    it('should generate and validate CNPJ roundtrip', () => {
-      const cnpj = generateCnpj({ formatted: false });
-      const validation = validateCnpj(cnpj);
-      expect(validation.valid).toBe(true);
-    });
+  it('lists exactly the 6 expected tools', async () => {
+    const { tools } = await client.listTools();
+    const names = tools.map((t) => t.name).sort();
+    expect(names).toEqual([
+      'generate_cnpj',
+      'generate_cpf',
+      'parse_boleto',
+      'validate_boleto',
+      'validate_cnpj',
+      'validate_cpf',
+    ]);
   });
 
-  describe('Boleto Validation Flow', () => {
-    it('should validate a generated valid boleto', () => {
-      const boleto = generateValidBoleto('0019', '320201', '0123456789', '9876543210', '10000', '0000150000');
-      const result = validateBoleto(boleto);
-      expect(result.valid).toBe(true);
+  it('calls validate_cpf with a valid CPF and gets valid: true', async () => {
+    const result = await client.callTool({
+      name: 'validate_cpf',
+      arguments: { cpf: '529.982.247-25' },
     });
-
-    it('should parse boleto and extract bank code, amount, and maturity', () => {
-      const boleto = generateValidBoleto('0019', '320201', '0123456789', '9876543210', '10000', '0000150000');
-      const result = parseBoleto(boleto);
-      expect(result.bankCode).toBe('001');
-      expect(result.amount).toBe(1500.00);
-      expect(result.maturity).toBeInstanceOf(Date);
-    });
-
-    it('should reject invalid boleto with malformed sequence 1 DV', () => {
-      let boleto = generateValidBoleto('0019', '320201', '0123456789', '9876543210', '10000', '0000150000');
-      // Change DV at position 10
-      boleto = boleto.substring(0, 10) + '9' + boleto.substring(11);
-      const result = validateBoleto(boleto);
-      expect(result.valid).toBe(false);
-    });
+    const payload = JSON.parse(firstText(result));
+    expect(payload.valid).toBe(true);
   });
 
-  describe('Cross-document Validation', () => {
-    it('should handle mixed valid and invalid documents', () => {
-      const validCpf = validateCpf('529.982.247-25');
-      const invalidCpf = validateCpf('000.000.000-00');
-      const validCnpj = validateCnpj('11.222.333/0001-81');
-      const invalidCnpj = validateCnpj('00.000.000/0000-00');
-
-      expect(validCpf.valid).toBe(true);
-      expect(invalidCpf.valid).toBe(false);
-      expect(validCnpj.valid).toBe(true);
-      expect(invalidCnpj.valid).toBe(false);
+  it('calls validate_cpf with an invalid CPF and gets valid: false plus a reason', async () => {
+    const result = await client.callTool({
+      name: 'validate_cpf',
+      arguments: { cpf: '529.982.247-26' },
     });
+    const payload = JSON.parse(firstText(result));
+    expect(payload.valid).toBe(false);
+    expect(payload.reason).toBe('check digit mismatch');
+  });
 
-    it('should verify server would expose 6 tools (conceptual)', () => {
-      // This represents that the server will have these 6 tools available
-      const tools = [
-        'validate_cpf',
-        'generate_cpf',
-        'validate_cnpj',
-        'generate_cnpj',
-        'validate_boleto',
-        'parse_boleto',
-      ];
-
-      expect(tools).toHaveLength(6);
-      expect(tools).toContain('validate_cpf');
-      expect(tools).toContain('generate_cpf');
-      expect(tools).toContain('validate_cnpj');
-      expect(tools).toContain('generate_cnpj');
-      expect(tools).toContain('validate_boleto');
-      expect(tools).toContain('parse_boleto');
+  it('generate_cpf returns a CPF that validate_cpf accepts', async () => {
+    const generated = await client.callTool({
+      name: 'generate_cpf',
+      arguments: { formatted: true },
     });
+    const { cpf } = JSON.parse(firstText(generated));
+    expect(cpf).toMatch(/^\d{3}\.\d{3}\.\d{3}-\d{2}$/);
+
+    const validated = await client.callTool({
+      name: 'validate_cpf',
+      arguments: { cpf },
+    });
+    expect(JSON.parse(firstText(validated)).valid).toBe(true);
+  });
+
+  it('exposes the docs://validation-rules resource with markdown content', async () => {
+    const { resources } = await client.listResources();
+    const uris = resources.map((r) => r.uri);
+    expect(uris).toContain('docs://validation-rules');
+
+    const read = await client.readResource({ uri: 'docs://validation-rules' });
+    const contents = read.contents as Array<{ uri: string; mimeType?: string; text?: string }>;
+    expect(contents).toHaveLength(1);
+    expect(contents[0].uri).toBe('docs://validation-rules');
+    expect(contents[0].mimeType).toBe('text/markdown');
+    expect(contents[0].text).toContain('# Regras de validação');
+    expect(contents[0].text).toContain('mod 11');
+    expect(contents[0].text).toContain('mod 10');
+    expect(contents[0].text).toContain('fator de vencimento');
+  });
+
+  it('exposes the audit_customer_record prompt embedding the given record', async () => {
+    const { prompts } = await client.listPrompts();
+    expect(prompts.map((p) => p.name)).toContain('audit_customer_record');
+
+    const record = JSON.stringify({
+      nome: 'Empresa Exemplo',
+      cpf: '529.982.247-25',
+      cnpj: '11.222.333/0001-81',
+    });
+    const prompt = await client.getPrompt({
+      name: 'audit_customer_record',
+      arguments: { record },
+    });
+    expect(prompt.messages.length).toBeGreaterThan(0);
+    const [message] = prompt.messages;
+    expect(message.role).toBe('user');
+    const content = message.content as { type: string; text: string };
+    expect(content.type).toBe('text');
+    expect(content.text).toContain(record);
+    expect(content.text).toContain('validate_cpf');
+    expect(content.text).toContain('validate_cnpj');
   });
 });
