@@ -67,7 +67,7 @@ graph TB
 ## Como rodar
 
 ### Pré-requisitos
-- Node.js >= 20
+- Node.js >= 22.12
 
 ### Instalação
 ```bash
