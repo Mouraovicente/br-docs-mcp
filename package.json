@@ -4,7 +4,7 @@
   "description": "MCP server for Brazilian document validation and generation (CPF, CNPJ, boleto)",
   "type": "module",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.12.0"
   },
   "main": "dist/index.js",
   "bin": {
